@@ -7,5 +7,7 @@
 #wq = save and quit
 #
 #Input ignore list!
+Exclude/
+Test/
 Debug/
 *.suo
