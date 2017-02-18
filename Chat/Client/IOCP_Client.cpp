@@ -3,134 +3,167 @@
 void main()
 {
 	WSADATA wsaData;
-	socketinfo* pSocketInfo = new SocketInfo;
-
-	char strIp[16] = {0,};
-	//**char strNickname[21] = {0,};
-	
-	// WSA 시작, 리턴 값이 0이라면 성공
-	if(WSAStartup(MAKEWORD(2,2),&wsaData))
+	if(WSAStartup(MAKEWORD(2,2), &wsaData))
 	{
-		ErrorHandling("WSAStartup() error : %d",WSAGetLastError());
+		ErrorHandling("ERROR - Failed WSAStartup() : %d",WSAGetLastError());
 	}
 
-	pSocketInfo->hSocket = WSASocket(PF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-	if(pSocketInfo->hSocket == INVALID_SOCKET)
+	// 소켓 생성
+	SOCKET hSocket = WSASocket(PF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	if(hSocket == INVALID_SOCKET)
 	{
-		ErrorHandling("socket() error : %d",WSAGetLastError());
+		WSACleanup();
+		ErrorHandling("ERROR - Failed WSASocket() : %d",WSAGetLastError());
 	}
 
-	// ip 입력
-	printf("접속할 서버의 IP를 입력하세요 : ");
-	scanf_s("%s",strIp,sizeof(strIp));
-	fflush(stdin);
+	// 서버 정보 객체 설정
+	SOCKADDR_IN servAddr;
+	memset(&servAddr, 0, sizeof(servAddr));
+	servAddr.sin_family = AF_INET;
+	servAddr.sin_port = htons(SERVER_PORT);
+	servAddr.sin_addr.s_addr = inet_addr(SERVER_IP);
 
-	memset(&pSocketInfo->compAddr,0,sizeof(pSocketInfo->compAddr));
-	pSocketInfo->compAddr.sin_family = AF_INET;
-	pSocketInfo->compAddr.sin_addr.s_addr = inet_addr(strIp);
-	pSocketInfo->compAddr.sin_port = htons(6664);
-
-	if(connect(pSocketInfo->hSocket,(SOCKADDR*)&pSocketInfo->compAddr,sizeof(pSocketInfo->compAddr)) == SOCKET_ERROR)
+	if(connect(hSocket,(SOCKADDR*)&servAddr,sizeof(servAddr)) == SOCKET_ERROR)
 	{
-		ErrorHandling("connect() error : %d",WSAGetLastError());
+		closesocket(hSocket);
+		WSACleanup();
+		ErrorHandling("ERROR - Failed connect() : %d",WSAGetLastError());
 	}
 
+	/*
 	// 구조체에 이벤트 핸들 삽입해서 전달
 	WSAEVENT event = WSACreateEvent();
-	memset(&(pSocketInfo->overlapped),0,sizeof(pSocketInfo->overlapped));
-	pSocketInfo->overlapped.hEvent = event;
+	WSAOVERLAPPED overlapped;
+	memset(&overlapped, 0, sizeof(overlapped));
+	overlapped.hEvent = event;
+	*/
 
 	printf("접속에 성공하였습니다!\n");
-	//**printf("닉네임을 입력해주세요(한글10자/영문20자 이내) : ");
-	//scanf_s("%s",strNickname,sizeof(strNickname));
-	//fflush(stdin);
-	
 	printf("채팅 방에 오신 것을 환영합니다!\n");
 	printf("도움말은 -help입니다.\n");
 	printf("메세지를 입력하세요.\n");
 
-	// 전송할 데이터
+	WSABUF dataBuf;
+	int flags = 0;
+
 	while(true)
 	{
-		scanf_s("%s",pSocketInfo->buffer,sizeof(pSocketInfo->buffer));
-		fflush(stdin);
+		char message[BUFSIZE] = {0,};
+		int i, bufferLen;
+		for (i = 0; 1; i++)
+		{
+			message[i] = getchar();
+			if (message[i] == '\n')
+			{
+				message[i++] = '\0';
+				break;
+			}
+		}
+		bufferLen = i;
 
 		// 입력 메세지가 exit라면 종료
-		if(!strcmp(pSocketInfo->buffer,"exit")) break;
+		if(!strcmp(message,"exit")) break;
 
-		Send(pSocketInfo);
-		// 전송 완료 확인
-		if(WSAWaitForMultipleEvents(1,&event,TRUE,WSA_INFINITE,FALSE) != WSA_WAIT_EVENT_0)
+		/* 클라이언트에서 IOCP 내용을 쓰려면 아래 구문 참조(서버와 유사)
+		socketInfo = (struct SOCKETINFO *)malloc(sizeof(struct SOCKETINFO));
+		memset((void *)socketInfo, 0x00, sizeof(struct SOCKETINFO));        
+		socketInfo->dataBuffer.len = bufferLen;
+		socketInfo->dataBuffer.buf = messageBuffer;
+		*/
+
+		// 3-1. 데이터 쓰기
+		int sendBytes = send(hSocket,message,bufferLen,0);
+		if (sendBytes > 0)
 		{
-			ErrorHandling("WSAWaitForMultipleEvents() error : %d",WSAGetLastError());
+			printf("TRACE - Send message : %s (%d bytes)\n",message,sendBytes);
+			// 3-2. 데이터 읽기
+			int receiveBytes = recv(hSocket,message,BUFSIZE,0);
+			if (receiveBytes > 0)
+			{
+				printf("TRACE - Receive message : %s (%d bytes)\n* Enter Message\n->", message, receiveBytes);
+			}            
 		}
-				
-		//** 전송된 바이트 수 확인
-		// 10014 에러가 발생해서 못써먹겠음
-		//if( WSAGetOverlappedResult(pSocketInfo->hSocket,&(pSocketInfo->overlapped),(LPDWORD)pSocketInfo->wsaBuf.len,FALSE,NULL) != TRUE)
-		//{
-		//	ErrorHandling("WSAGetOverlappedResult() error : %d",WSAGetLastError());
-		//}
-		//printf("전송된 바이트 수 : %d\n",pSocketInfo->wsaBuf.len);
-
-		Recv(pSocketInfo);
+		//Send(hSocket,dataBuf,message,overlapped);
+		//Recv(hSocket,dataBuf,message,overlapped);
 	}
+
 	//** 받는 부분 따로, 주는 부분 따로, 쓰레드가 필요한 시점
 
-	WSACloseEvent(event);
-	closesocket(pSocketInfo->hSocket);
+	WSACleanup();
+	//WSACloseEvent(event);
+	closesocket(hSocket);
 	WSACleanup();
 }
 
-void Send(socketinfo* pSocketInfo)
+void Send(SOCKET &hSocket,WSABUF &dataBuf,char* message,WSAOVERLAPPED &overlapped)
 {
+	int sendBytes;
 	// 입력 메세지를 버퍼에 담음
-	pSocketInfo->wsaBuf.buf = pSocketInfo->buffer;
-	pSocketInfo->wsaBuf.len = strlen(pSocketInfo->buffer);
+	dataBuf.len = strlen(message);
+	dataBuf.buf = message;
 
-	if(WSASend(pSocketInfo->hSocket,&(pSocketInfo->wsaBuf),1,(LPDWORD)&pSocketInfo->sendbytes,0,&(pSocketInfo->overlapped),NULL)==SOCKET_ERROR)
+	if(WSASend(hSocket, &dataBuf, 1, (LPDWORD)&sendBytes, 0, &overlapped, NULL) == SOCKET_ERROR)
 	{
-		if(WSAGetLastError() != WSA_IO_PENDING)
+		if(WSAGetLastError() == WSA_IO_PENDING)
+		{
+			//* 이하 2줄, 사실 현재로써는 거의 무쓸모 - 차후 연구 필요
+			// WSA 이벤트를 기다린다, 전송완료를 기다린다.
+			WSAWaitForMultipleEvents( 1, &(overlapped.hEvent), TRUE, WSA_INFINITE, FALSE );
+
+			// 결과값을 받아온다.(사실 10014 에러가 발생하므로 못써먹는듯)
+			WSAGetOverlappedResult( hSocket, &overlapped, (LPDWORD)&sendBytes, FALSE, NULL );
+		}
+		else
 		{
 			ErrorHandling("WSASend() error : %d",WSAGetLastError());
 		}
 	}
+	printf("Send[%s]\n",dataBuf.buf);
 }
 
-void Recv(socketinfo* pSocketInfo)
+void Recv(SOCKET &hSocket,WSABUF &dataBuf,char* message,WSAOVERLAPPED &overlapped)
 {
+	int recvBytes;
 	int flags = 0;
 
-	/* 클라는 필요없는 듯?
+	// 서버 하나만을 통해 정보를 얻기 때문에 서버와 달리 아래 구문은 불필요
+	/*
 	// 버퍼를 비우고 설정 초기화
 	memset(&(pSocketInfo->overlapped),0,sizeof(OVERLAPPED));
 	pSocketInfo->wsaBuf.len = BUFSIZE;
 	pSocketInfo->wsaBuf.buf = pSocketInfo->buffer;
 	*/
-	//** 서버로부터 제대로 에코를 받게 되면 필요없어질지도
-	memset(pSocketInfo->wsaBuf.buf,0,BUFSIZE);
 
-	if(WSARecv(pSocketInfo->hSocket,&(pSocketInfo->wsaBuf),1,(LPDWORD)&pSocketInfo->recvbytes,(LPDWORD)&flags,&(pSocketInfo->overlapped),CompRoutine)==SOCKET_ERROR)
+	if(WSARecv(hSocket,&dataBuf,1,(LPDWORD)&recvBytes,(LPDWORD)&flags,&overlapped,NULL) == SOCKET_ERROR)
 	{
-		if(WSAGetLastError() != WSA_IO_PENDING)
+		if(WSAGetLastError() == WSA_IO_PENDING)
+		{
+			//* 이하 2줄, 사실 현재로써는 거의 무쓸모 - 차후 연구 필요
+			// WSA 이벤트를 기다린다, 전송완료를 기다린다.
+			WSAWaitForMultipleEvents( 1, &(overlapped.hEvent), TRUE, WSA_INFINITE, FALSE );
+
+			// 결과값을 받아온다.(사실 10014 에러가 발생하므로 못써먹는듯)
+			WSAGetOverlappedResult( hSocket, &overlapped, (LPDWORD)&recvBytes, FALSE, NULL );
+		}
+		else
 		{
 			ErrorHandling("WSARecv() error : %d",WSAGetLastError());
 		}
 	}
-	printf("Recv[%s]\n",pSocketInfo->wsaBuf.buf);
+	printf("Recv[%s]\n",dataBuf.buf);
 }
 
+//* 함수만 만들었지, 무쓸모
 void CALLBACK CompRoutine(DWORD dwError,DWORD szRecvBytes,LPWSAOVERLAPPED lpOverlapped,DWORD flags)
 {
-	SocketInfo *pSocketInfo = (SocketInfo *)lpOverlapped;
+	//SocketInfo *pSocketInfo = (SocketInfo *)lpOverlapped;
 	if(dwError != 0)
 	{
-		ErrorHandling("CompRoutine() error");
 	}
 	else
 	{
-		pSocketInfo->recvbytes = szRecvBytes;
-		printf("Received message: %s \n",pSocketInfo->buffer);
+		//pSocketInfo->recvbytes = szRecvBytes;
+		//printf("Received message: %s \n",pSocketInfo->buffer);
 	}
 }
 

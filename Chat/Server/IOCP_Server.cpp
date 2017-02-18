@@ -2,75 +2,97 @@
 
 void main(int argc, char** argv)
 {
+	// Winsock Start - windock.dll 로드
 	WSADATA wsaData;
-	// CompletionPort의 Handle
-	HANDLE hCompletionPort;
-	// 쓰레드를 생성할 때 CPU의 개수를 고려해야 하므로 시스템 정보를 획득
-	SYSTEM_INFO SystemInfo;
-
-	// 서버 소켓 정보
-	SOCKET hServSock;
-	SOCKADDR_IN servAddr;
-
-	// 클라이언트 소켓 정보
-	socketinfo* pSocketInfo;
-
-	// Load Winsock 2.2 DLL
-	if(WSAStartup(MAKEWORD(2,2),&wsaData))
+	if(WSAStartup(MAKEWORD(2,2),&wsaData) != 0)
 	{
-		ErrorHandling("WSAStartup() error : %d",WSAGetLastError());
-	}
-
-	// 1.CompletionPort 생성
-	// CreateCompletionPort의 첫 번째에 해당하며, CompletionPort 생성부
-	// 은행을 비유로 들자면 은행 건물 건축이다
-	hCompletionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE,NULL,0,0);
-
-	// 시스템 정보 획득
-	// 필요한 부분은 CPU의 쓰레드 개수이며, 멤버변수 dwNumberOfProcessors에서 확인 가능
-	GetSystemInfo(&SystemInfo);
-	unsigned int iNumThreads = SystemInfo.dwNumberOfProcessors * 2;
-
-	// 2.CompletionPort에서 입출력 완료를 기다리는 쓰레드를 CPU의 2배로 생성
-	// 은행을 비유로 들자면 은행원을 고용한 셈이다
-	for(unsigned int i = 0; i<iNumThreads; i++)
-	{
-		_beginthreadex(NULL,0,CompletionThread,(LPVOID)hCompletionPort,0,NULL);
+		ErrorHandling("ERROR - Failed WSAStartup() : %d", WSAGetLastError());
 	}
 
 	// IOCP의 소켓은 반드시 중첩 입출력 방식(OVERLAPPED)으로 생성하여야 함
-	hServSock = WSASocket(AF_INET,SOCK_STREAM,0,NULL,0,WSA_FLAG_OVERLAPPED);
+	SOCKET hServSock = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	if (hServSock == INVALID_SOCKET)
+	{
+		WSACleanup();
+		ErrorHandling("ERROR - Failed WSASocket() : %d", WSAGetLastError());
+	}
+
+	// 서버 정보 객체 설정
+	SOCKADDR_IN servAddr;
 	servAddr.sin_family = AF_INET;
+	servAddr.sin_port = htons(SERVER_PORT);
 	servAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	servAddr.sin_port=htons(atoi("6664"));
 
-	bind(hServSock,(SOCKADDR*)&servAddr,sizeof(servAddr));
-	listen(hServSock,5);
+	if(bind(hServSock, (SOCKADDR*)&servAddr, sizeof(servAddr)) == SOCKET_ERROR)
+	{
+		closesocket(hServSock);
+		WSACleanup();
+		ErrorHandling("ERROR - Failed bind() : %d", WSAGetLastError());
+	}
+	if(listen(hServSock, 5) == SOCKET_ERROR)
+	{
+		closesocket(hServSock);
+		WSACleanup();
+		ErrorHandling("ERROR - Failed listen() : %d", WSAGetLastError());
+	}
 
+	// 완료결과를 처리하는 객체(CP : Completion Port) 생성
+	HANDLE hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+
+	// 쓰레드를 생성할 때 CPU의 개수를 고려해야 하므로 시스템 정보를 획득
+	// 필요한 부분은 CPU의 쓰레드 개수이며, 멤버변수 dwNumberOfProcessors에서 확인 가능
+	SYSTEM_INFO SystemInfo;
+	GetSystemInfo(&SystemInfo);
+	int threadCount = SystemInfo.dwNumberOfProcessors * 2;
+	//** 이 쓰레드 ID의 용도를 확인하면 이용 가치가 있을 듯
+	unsigned threadID;
+	// 쓰레드 핸들러
+	HANDLE *hThread = new HANDLE[threadCount];
+	for(int i=0; i<threadCount; i++)
+	{
+		hThread[i] = (HANDLE)_beginthreadex(NULL, 0, CompletionThread, (LPVOID)hIOCP, 0, &threadID);
+	}
+
+	SOCKADDR_IN clntAddr;
+	int addrLen = sizeof(clntAddr);
+	memset(&clntAddr, 0, addrLen);
+	SOCKET clientSocket;
+	SOCKETINFO *socketInfo;
+	DWORD receiveBytes;
+	DWORD flag;
+	
 	while(true)
 	{
-		printf("//**메인함수반복문 시작\n");
-		SOCKET hSocket;
-		SOCKADDR_IN compAddr;
-		int addrLen = sizeof(compAddr);
+		clientSocket = accept(hServSock, (SOCKADDR*)&clntAddr, &addrLen);
+		if(clientSocket == INVALID_SOCKET)
+		{
+			Log("ERROR - Failed accept() : %d", WSAGetLastError());
+		}
 
-		hSocket = accept(hServSock,(SOCKADDR*)&compAddr,&addrLen);
-		Log("클라이언트가 접속하였습니다 : %s\n",inet_ntoa(compAddr.sin_addr));
-		
-		// 연결된 클라이언트의 소켓 정보를 동적할당으로 설정
-		pSocketInfo = new SocketInfo;
-		pSocketInfo->hSocket = hSocket;
-		memcpy(&(pSocketInfo->compAddr),&compAddr,addrLen);
+		socketInfo = new SOCKETINFO;
+		memset((void *)socketInfo,0x00,sizeof(SOCKETINFO));
+		socketInfo->socket = clientSocket;
+		socketInfo->receiveBytes = 0;
+		socketInfo->sendBytes = 0;
+		socketInfo->dataBuffer.len = BUFSIZE;
+		socketInfo->dataBuffer.buf = socketInfo->messageBuffer;
+		flag = 0;
 
-		// 3.Overlapped 소켓과 CompletionPort의 연결
-		// CreateIoCompleationPort의 두 번째 기능으로, 현재 연결된 클라이언트와 hCompletionPort를 연결
-		// 세 번째 인자로 클라이언트 정보를 담았던 pSocketInfo를 전달
-		// 은행을 비유로 들자면 손님의 입장이 되시겠다
-		CreateIoCompletionPort((HANDLE)pSocketInfo->hSocket,hCompletionPort,(DWORD)pSocketInfo,0);
-		
-		// 4.중첩된 데이터 입력?
-		Recv(pSocketInfo);
-		printf("//**메인함수반복문 리시브\n");
+		Log("클라이언트가 접속하였습니다 : %s\n",inet_ntoa(clntAddr.sin_addr));
+
+		// CreateIoCompleationPort의 두 번째 기능으로, 현재 연결된 클라이언트(overlapped)와 hIOCP를 연결
+		hIOCP = CreateIoCompletionPort((HANDLE)clientSocket, hIOCP, (DWORD)socketInfo, 0);
+
+		// 중첩 소켓을 지정하고 완료시 실행될 함수를 넘겨준다.
+		if (WSARecv(socketInfo->socket, &socketInfo->dataBuffer, 1, &receiveBytes, &flag, &(socketInfo->overlapped), NULL))
+		{
+			if (WSAGetLastError() != WSA_IO_PENDING)
+			{
+				closesocket(hServSock);
+				WSACleanup();
+				ErrorHandling("ERROR - Failed WSARecv() : %d", WSAGetLastError());
+			}
+		}
 	}
 
 	//** 모든 클라이언트 종료 함수 콜 추가부
@@ -78,100 +100,129 @@ void main(int argc, char** argv)
 	WSACleanup();
 }
 
-// 입출력 완료에 따른 쓰레드의 행동 정의이며, 실제 기능 구현부... 아마...? switch문을 이용하면...
-unsigned int __stdcall CompletionThread(HANDLE hCompletionPort)
+unsigned int __stdcall CompletionThread(LPVOID hIOCP)
 {
-	DWORD BytesTransferred;
-	socketinfo* pSocketInfo;
+	HANDLE threadHandler = (HANDLE *)hIOCP;
+	DWORD recvBytes;
+	DWORD sendBytes;
+	DWORD completionKey;
+	DWORD flags;
+	SOCKETINFO *eventSocket;
 
-	while(true)
+	while(1)
 	{
-		printf("//**쓰레드함수반복문 시작\n");
-		// 5. 입출력이 완료된 소켓 정보 획득
-		// 첫번째 인자로 전달된 hCompletionPort에 연결된 소켓들이 완료될 때까지 대기
-		// 이후, 완료되는 소켓부터 리턴
-		GetQueuedCompletionStatus(hCompletionPort,
-			&BytesTransferred,						// 전송된 바이트 수
-			(LPDWORD)&pSocketInfo,
-			(LPOVERLAPPED*)&pSocketInfo,				// overlapped 구조체 포인터
-			INFINITE);
-		// 세 번째 인자로 전달된 pSocketInfo는 입출력이 완료된 소켓으로,
-		// hCompletionPort와 연결할 때 인자로 전달한 클라이언트 정보가 전달됨
-
-		// 네 번째 인자로 전달된 pSocketInfo는 WSA Send/Recv 시에 전달한
-		// overlapped 멤버 변수의 포인터를 얻기 위해 사용
-
-		// (datainfo 구조체의 첫 번째 멤버 변수는 overlapped
-		// 따라서 둘의 시작 주소는 동일하기에 WSARecv에서 overlapped의 주소를 넘겨도
-		// 이곳에서 LPPER_ID_DATA로 사용 가능)
-
-		// EOF 발생
-		if(!BytesTransferred)
+		if(GetQueuedCompletionStatus(threadHandler, &recvBytes, &completionKey, (LPOVERLAPPED*)&eventSocket, INFINITE) == 0)
 		{
-			// 클라이언트 연결 종료 시 처리
-			closesocket(pSocketInfo->hSocket);
-			delete pSocketInfo;
-			delete pSocketInfo;
+			printf("ERROR - Failed GetQueuedCompletionStatus() : %d", WSAGetLastError());
+			closesocket(eventSocket->socket);
+			delete eventSocket;
+		}
+
+		eventSocket->dataBuffer.len = recvBytes;
+
+		if(recvBytes == 0)
+		{
+			closesocket(eventSocket->socket);
+			delete eventSocket;
 
 			continue;
 		}
-		
-		// 버퍼의 끝에 문자열 종료 메세지 추가
-		pSocketInfo->wsaBuf.buf[BytesTransferred] = '\0';
-		printf("Recv[%s]\n",pSocketInfo->wsaBuf.buf);
+		else
+		{
+			printf("TRACE - Receive message : %s (%d bytes)\n", eventSocket->dataBuffer.buf, eventSocket->dataBuffer.len);
 
-		// 6. 클라이언트로 메세지 에코
-		pSocketInfo->wsaBuf.len = BytesTransferred;
-		Send(pSocketInfo);
-		printf("//**쓰레드함수반복문 샌드\n");
-		
-		Recv(pSocketInfo);
-		printf("//**쓰레드함수반복문 리시브\n");
+			if (WSASend(eventSocket->socket, &(eventSocket->dataBuffer), 1, &sendBytes, 0, NULL, NULL) == SOCKET_ERROR)
+			{
+				if (WSAGetLastError() != WSA_IO_PENDING)
+				{
+					printf("Error - Fail WSASend(error_code : %d)\n", WSAGetLastError());
+				}
+			}
+
+			printf("TRACE - Send message : %s (%d bytes)\n", eventSocket->dataBuffer.buf, eventSocket->dataBuffer.len);
+
+			memset(eventSocket->messageBuffer, 0x00, BUFSIZE);
+			eventSocket->receiveBytes = 0;
+			eventSocket->sendBytes = 0;
+			eventSocket->dataBuffer.len = BUFSIZE;
+			eventSocket->dataBuffer.buf = eventSocket->messageBuffer;
+			flags = 0;
+
+			if (WSARecv(eventSocket->socket, &(eventSocket->dataBuffer), 1, &recvBytes, &flags, &eventSocket->overlapped, NULL) == SOCKET_ERROR)
+			{
+				if (WSAGetLastError() != WSA_IO_PENDING)
+				{
+					printf("Error - Fail WSARecv(error_code : %d)\n", WSAGetLastError());
+				}
+			}
+		}
 	}
+
 	return 0;
 }
 
-void Send(socketinfo* pSocketInfo)
-{
-	if(WSASend(pSocketInfo->hSocket,&(pSocketInfo->wsaBuf),1,(LPDWORD)&pSocketInfo->sendbytes,0,&(pSocketInfo->overlapped),NULL)==SOCKET_ERROR)
-	{
-		if(WSAGetLastError() != WSA_IO_PENDING)
-		{
-			ErrorHandling("WSASend() error : %d",WSAGetLastError());
-		}
-	}
-}
+//void Send(PER_HANDLE_DATA* PerHandleData,PER_IO_DATA* PerIoData)
+//{
+//	int sendBytes;
+//	if(WSASend(PerHandleData->hClntSock, &(PerIoData->wsaBuf), 1, NULL, 0, NULL, NULL)==SOCKET_ERROR)
+//	{
+//		if(WSAGetLastError() == WSA_IO_PENDING)
+//		{
+//			//* 이하 2줄, 사실 현재로써는 거의 무쓸모 - 차후 연구 필요
+//			// WSA 이벤트를 기다린다, 전송완료를 기다린다.
+//			WSAWaitForMultipleEvents( 1, &(PerIoData->overlapped.hEvent), TRUE, WSA_INFINITE, FALSE );
+//
+//			// 결과값을 받아온다.(사실 10014 에러가 발생하므로 못써먹는듯)
+//			WSAGetOverlappedResult( PerHandleData->hClntSock, &(PerIoData->overlapped), (LPDWORD)&sendBytes, FALSE, NULL );
+//		}
+//		else
+//		{
+//			ErrorHandling("WSASend() error : %d",WSAGetLastError());
+//		}
+//	}
+//	printf("Send[%s]\n",PerIoData->wsaBuf.buf);
+//}
+//
+//void Recv(PER_HANDLE_DATA* PerHandleData,PER_IO_DATA* PerIoData)
+//{
+//	int recvBytes;
+//	int flags = 0;
+//
+//	// 데이터를 받기 전에 버퍼를 비우고 설정 초기화
+//	memset(&(PerIoData->overlapped), 0, sizeof(OVERLAPPED));
+//	PerIoData->wsaBuf.len = BUFSIZE;
+//	PerIoData->wsaBuf.buf = PerIoData->buffer;
+//
+//	if(WSARecv(PerHandleData->hClntSock, &(PerIoData->wsaBuf), 1, (LPDWORD)&recvBytes, (LPDWORD)&flags, &(PerIoData->overlapped), NULL)==SOCKET_ERROR)
+//	{
+//		if(WSAGetLastError() == WSA_IO_PENDING)
+//		{
+//			//* 이하 2줄, 사실 현재로써는 거의 무쓸모 - 차후 연구 필요
+//			// WSA 이벤트를 기다린다, 전송완료를 기다린다.
+//			WSAWaitForMultipleEvents( 1, &(PerIoData->overlapped.hEvent), TRUE, WSA_INFINITE, FALSE );
+//
+//			// 결과값을 받아온다.(사실 10014 에러가 발생하므로 못써먹는듯)
+//			WSAGetOverlappedResult( PerHandleData->hClntSock, &(PerIoData->overlapped), (LPDWORD)&recvBytes, FALSE, NULL );
+//		}
+//		else
+//		{
+//			ErrorHandling("WSARecv() error : %d",WSAGetLastError());
+//		}
+//	}
+//	printf_s("Recv[%s]\n",PerIoData->wsaBuf.buf);
+//}
 
-void Recv(socketinfo* pSocketInfo)
-{
-	int flags = 0;
-	
-	// 버퍼를 비우고 설정 초기화
-	memset(&(pSocketInfo->overlapped),0,sizeof(OVERLAPPED));
-	pSocketInfo->wsaBuf.len = BUFSIZE;
-	pSocketInfo->wsaBuf.buf = pSocketInfo->buffer;
-
-	if(WSARecv(pSocketInfo->hSocket,&(pSocketInfo->wsaBuf),1,(LPDWORD)&pSocketInfo->recvbytes,(LPDWORD)&flags,&(pSocketInfo->overlapped),CompRoutine)==SOCKET_ERROR)
-	{
-		if(WSAGetLastError() != WSA_IO_PENDING)
-		{
-			printf("WSAGetLastError() : %d",WSAGetLastError());
-			//ErrorHandling("WSARecv() error : %d",WSAGetLastError());
-		}
-	}
-}
-
+//* 함수만 만들었지, 무쓸모
 void CALLBACK CompRoutine(DWORD dwError,DWORD szRecvBytes,LPWSAOVERLAPPED lpOverlapped,DWORD flags)
 {
-	SocketInfo *pSocketInfo = (SocketInfo *)lpOverlapped;
+	//SocketInfo *pSocketInfo = (SocketInfo *)lpOverlapped;
 	if(dwError != 0)
 	{
-		ErrorHandling("CompRoutine() error");
 	}
 	else
 	{
-		pSocketInfo->recvbytes = szRecvBytes;
-		printf("Received message: %s \n",pSocketInfo->buffer);
+		//pSocketInfo->recvbytes = szRecvBytes;
+		//printf("Received message: %s \n",pSocketInfo->buffer);
 	}
 }
 

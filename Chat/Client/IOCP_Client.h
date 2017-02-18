@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <winsock2.h>
-#include <process.h>
 // 가변 인자 사용
 #include <stdarg.h>
 // _getch()를 이용하기 위한 헤더로, 콘솔 전용
@@ -9,24 +8,31 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-#define BUFSIZE 1024
+#define BUFSIZE		1024
+#define SERVER_IP	"127.0.0.1"
+#define SERVER_PORT	6664
 
 // 소켓 및 전송 데이터 정보
 typedef struct SocketInfo
 {
-	WSAOVERLAPPED overlapped;
 	SOCKET hSocket;
 	SOCKADDR_IN compAddr;
+} socketinfo;
+
+typedef struct DataInfo
+{
+	WSAOVERLAPPED overlapped;
 
 	char buffer[BUFSIZE];
 	WSABUF wsaBuf;
-	int sendbytes;
-	int recvbytes;
-} socketinfo;
+} datainfo;
 
-void Send(socketinfo* pSocketInfo);
-void Recv(socketinfo* pSocketInfo);
+void Send(SOCKET &hSocket,WSABUF &dataBuf,char* message,WSAOVERLAPPED &overlapped);
+void Recv(SOCKET &hSocket,WSABUF &dataBuf,char* message,WSAOVERLAPPED &overlapped);
+//void Send(socketinfo* pSocketInfo);
+//void Recv(socketinfo* pSocketInfo);
 
+//* 함수만 만들었지, 무쓸모
 void CALLBACK CompRoutine(DWORD dwError,DWORD szRecvBytes,LPWSAOVERLAPPED lpOverlapped,DWORD flags);
 
 void ErrorHandling(const char* fmt, ...);
