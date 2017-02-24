@@ -74,21 +74,23 @@ namespace Practice
             string changeA = baseA.ToString();
             int changeB = int.Parse(changeA);
 
-            // 배열과 반복문 foreach
-            int[] array = {1, 2, 3, 4, 5};
-            foreach (int count in array)
+            // 배열 선언과 반복문 foreach
+            int[] array1 = {1, 2, 3, 4, 5};
+            int[] array2 = new int[] { 1, 2, 3, 4, 5 };
+            int[] array3 = new int[5];
+            foreach (int count in array1)
             {
                 Console.WriteLine("{0} ", count);
             }
-            
+
             // Method와 call by reference
             int swapA = 59;
             int swapB = 36;
-            
+
             // 선언된 함수가 static형이 아니라면 클래스의 객체를 이용해서 함수를 사용해야 함
             Program pro = new Program();
             pro.SwapA(ref swapA, ref swapB);
-             
+
             // 선언된 함수가 static형이라면 함수 그대로 사용 가능
             SwapB(ref swapA, ref swapB);
         }
